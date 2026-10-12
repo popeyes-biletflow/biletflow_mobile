@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Biletflow Admin",
+    "slug": "biletflow-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.biletflow.eventadmin"
+    },
+    "android": {
+      "package": "com.biletflow.eventadmin",
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Biletflow Admin to use the camera to scan ticket QR codes.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      "expo-secure-store"
+    ]
+  }
+}
