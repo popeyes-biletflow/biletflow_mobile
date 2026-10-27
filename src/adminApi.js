@@ -67,3 +67,27 @@ export async function getAssignedEvents(token) {
     };
   });
 }
+
+export async function validateTicket(token, eventId, qrPayload) {
+  const result = await request(
+    `/api/mobile/events/${encodeURIComponent(eventId)}/tickets/validate`,
+    {
+      token,
+      method: "POST",
+      body: JSON.stringify({ qrPayload })
+    }
+  );
+
+  if (typeof result.valid !== "boolean") {
+    throw new Error("The ticket-validation response did not include a valid boolean result.");
+  }
+
+  return {
+    valid: result.valid,
+    message: typeof result.message === "string" ? result.message : ""
+  };
+}
+
+export function isNetworkError(error) {
+  return error instanceof TypeError || error?.name === "TypeError";
+}
