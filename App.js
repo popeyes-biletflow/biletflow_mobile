@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -12,8 +12,16 @@ import {
   View
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Speech from "expo-speech";
 import * as SecureStore from "expo-secure-store";
-import { getAssignedEvents, signIn } from "./src/adminApi";
+import { getAssignedEvents, isNetworkError, signIn, validateTicket } from "./src/adminApi";
+import {
+  cacheEvents,
+  cacheScan,
+  clearLocalCache,
+  getCachedEvents,
+  getCachedScan
+} from "./src/localCache";
 
 const TOKEN_KEY = "biletflow_admin_access_token";
 const COLORS = {
@@ -196,12 +204,90 @@ function EventsScreen({ events, error, onSelect, onSignOut }) {
   );
 }
 
-function ScannerScreen({ event, onBack }) {
+function ScannerScreen({ event, token, onBack }) {
   const [permission, requestPermission] = useCameraPermissions();
-  const [scanned, setScanned] = useState(false);
+  const [result, setResult] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const processingRef = useRef(false);
 
-  function handleBarcodeScanned() {
-    setScanned(true);
+  function showResult(nextResult) {
+    setResult(nextResult);
+    Speech.stop();
+    Speech.speak(nextResult.speech);
+  }
+
+  async function handleBarcodeScanned({ data }) {
+    if (processingRef.current || result) return;
+    if (typeof data !== "string" || !data.trim()) {
+      showResult({
+        status: "error",
+        title: "QR CODE UNREADABLE",
+        message: "This QR code did not contain a ticket payload.",
+        speech: "QR code unreadable"
+      });
+      return;
+    }
+
+    processingRef.current = true;
+    setProcessing(true);
+    Speech.stop();
+    Speech.speak("Checking ticket");
+    try {
+      const previousScan = await getCachedScan(event.id, data);
+      if (previousScan) {
+        showResult({
+          status: previousScan.valid ? "duplicate" : "invalid",
+          title: previousScan.valid ? "ALREADY SCANNED" : "PREVIOUSLY INVALID",
+          message: previousScan.valid
+            ? "This ticket was already validated on this device."
+            : previousScan.message || "This ticket was previously rejected.",
+          speech: previousScan.valid ? "Ticket already scanned" : "Ticket not valid"
+        });
+        return;
+      }
+
+      let validation;
+      try {
+        validation = await validateTicket(token, event.id, data);
+      } catch (validationError) {
+        if (!isNetworkError(validationError)) throw validationError;
+        showResult({
+          status: "offline",
+          title: "OFFLINE — NOT VALIDATED",
+          message: "This ticket has not been validated. Reconnect and scan it again.",
+          speech: "Offline. Ticket not validated"
+        });
+        return;
+      }
+
+      const nextResult = {
+        status: validation.valid ? "valid" : "invalid",
+        title: validation.valid ? "TICKET VALID" : "TICKET NOT VALID",
+        message: validation.message || (
+          validation.valid
+            ? "Entry approved. This ticket is now saved on this device."
+            : "Entry not approved."
+        ),
+        speech: validation.valid ? "Ticket valid" : "Ticket not valid"
+      };
+
+      try {
+        await cacheScan(event.id, data, validation);
+      } catch (cacheError) {
+        nextResult.message += " The result could not be saved for offline duplicate checks.";
+      }
+      showResult(nextResult);
+    } catch (scanError) {
+      showResult({
+        status: "error",
+        title: "SCAN COULD NOT BE VERIFIED",
+        message: scanError.message || "Please try again.",
+        speech: "Scan could not be verified"
+      });
+    } finally {
+      processingRef.current = false;
+      setProcessing(false);
+    }
   }
 
   return (
@@ -210,7 +296,7 @@ function ScannerScreen({ event, onBack }) {
       {permission?.granted ? (
         <CameraView
           barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-          onBarcodeScanned={scanned ? undefined : handleBarcodeScanned}
+          onBarcodeScanned={result || processing ? undefined : handleBarcodeScanned}
           style={StyleSheet.absoluteFill}
         />
       ) : (
@@ -226,7 +312,7 @@ function ScannerScreen({ event, onBack }) {
             <Text style={styles.scannerKicker}>SCANNING FOR</Text>
             <Text numberOfLines={1} style={styles.scannerEventName}>{event.name}</Text>
           </View>
-          <View style={styles.readyBadge}><View style={styles.liveDot} /><Text style={styles.readyText}>LIVE</Text></View>
+          <View style={styles.readyBadge}><View style={styles.liveDot} /><Text style={styles.readyText}>{processing ? "CHECKING" : "LIVE"}</Text></View>
         </View>
 
         {!permission ? (
@@ -243,22 +329,33 @@ function ScannerScreen({ event, onBack }) {
           <>
             <View style={styles.viewfinderArea}>
               <View style={styles.viewfinder}>
-                <View style={[styles.corner, styles.cornerTopLeft]} />
-                <View style={[styles.corner, styles.cornerTopRight]} />
-                <View style={[styles.corner, styles.cornerBottomLeft]} />
-                <View style={[styles.corner, styles.cornerBottomRight]} />
-                {!scanned && <View style={styles.scanLine} />}
+                <View style={[styles.corner, styles.cornerTopLeft, result && styles[`corner${result.status}`]]} />
+                <View style={[styles.corner, styles.cornerTopRight, result && styles[`corner${result.status}`]} />
+                <View style={[styles.corner, styles.cornerBottomLeft, result && styles[`corner${result.status}`]} />
+                <View style={[styles.corner, styles.cornerBottomRight, result && styles[`corner${result.status}`]} />
+                {!result && <View style={styles.scanLine} />}
               </View>
               <Text style={styles.viewfinderHint}>
-                {scanned ? "QR code captured" : "Align the ticket QR code within the frame"}
+                {processing ? "Checking ticket…" : result ? "Scan result" : "Align the ticket QR code within the frame"}
               </Text>
             </View>
             <View style={styles.scannerBottom}>
-              {scanned ? (
+              {processing ? (
+                <ActivityIndicator color={COLORS.accent} />
+              ) : result ? (
                 <>
-                  <Text style={styles.scanSuccess}>QR CODE CAPTURED</Text>
-                  <Text style={styles.scanSuccessCopy}>Ready for the next ticket.</Text>
-                  <PrimaryButton label="Scan next ticket" onPress={() => setScanned(false)} />
+                  <View
+                    accessibilityLiveRegion="assertive"
+                    accessibilityRole="alert"
+                    style={[styles.resultPanel, styles[`resultPanel${result.status}`]]}
+                  >
+                    <Text style={[styles.resultTitle, styles[`resultText${result.status}`]}>{result.title}</Text>
+                    <Text style={styles.resultMessage}>{result.message}</Text>
+                  </View>
+                  <PrimaryButton
+                    label="Scan next ticket"
+                    onPress={() => setResult(null)}
+                  />
                 </>
               ) : (
                 <>
@@ -278,6 +375,7 @@ export default function App() {
   const [screen, setScreen] = useState("loading");
   const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -293,10 +391,30 @@ export default function App() {
           return;
         }
 
-        const assignedEvents = await getAssignedEvents(storedToken);
-        if (!active) return;
-        setEvents(assignedEvents);
-        setScreen("events");
+        setToken(storedToken);
+        try {
+          const assignedEvents = await getAssignedEvents(storedToken);
+          let cacheWarning = "";
+          try {
+            await cacheEvents(assignedEvents);
+          } catch (cacheError) {
+            cacheWarning = "Assigned events could not be saved for offline use.";
+          }
+          if (!active) return;
+          setEvents(assignedEvents);
+          setError(cacheWarning);
+          setScreen("events");
+        } catch (eventsError) {
+          if (!isNetworkError(eventsError)) throw eventsError;
+          const cachedEvents = await getCachedEvents();
+          if (!active) return;
+          if (cachedEvents === null) {
+            throw new Error("You're offline and no assigned events are cached on this device.");
+          }
+          setEvents(cachedEvents);
+          setError("Offline: showing assigned events saved on this device.");
+          setScreen("events");
+        }
       } catch (restoreError) {
         if (!active) return;
         setError(restoreError.message || "Unable to restore your session.");
@@ -320,7 +438,13 @@ export default function App() {
       const accessToken = await signIn(email, password);
       const assignedEvents = await getAssignedEvents(accessToken);
       await SecureStore.setItemAsync(TOKEN_KEY, accessToken);
+      setToken(accessToken);
       setEvents(assignedEvents);
+      try {
+        await cacheEvents(assignedEvents);
+      } catch (cacheError) {
+        setError("Signed in, but assigned events could not be saved for offline use.");
+      }
       setScreen("events");
     } catch (signInError) {
       setError(signInError.message || "Unable to sign in. Please try again.");
@@ -333,11 +457,19 @@ export default function App() {
     setError("");
     try {
       await SecureStore.deleteItemAsync(TOKEN_KEY);
-      setSelectedEvent(null);
-      setEvents([]);
-      setScreen("signIn");
     } catch (signOutError) {
       setError(signOutError.message || "Unable to securely sign out.");
+      return;
+    }
+
+    setToken("");
+    setSelectedEvent(null);
+    setEvents([]);
+    setScreen("signIn");
+    try {
+      await clearLocalCache();
+    } catch (cacheError) {
+      setError("Signed out, but local scan data could not be removed from this device.");
     }
   }
 
@@ -358,7 +490,11 @@ export default function App() {
           onSignOut={handleSignOut}
         />
       ) : (
-        <ScannerScreen event={selectedEvent} onBack={() => { setError(""); setScreen("events"); }} />
+        <ScannerScreen
+          event={selectedEvent}
+          token={token}
+          onBack={() => { setError(""); setScreen("events"); }}
+        />
       )}
     </View>
   );
@@ -437,8 +573,24 @@ const styles = StyleSheet.create({
   scannerBottom: { alignItems: "center", paddingHorizontal: 26, paddingTop: 24, paddingBottom: Platform.OS === "ios" ? 42 : 26, backgroundColor: "rgba(8,9,8,0.82)" },
   scanPrompt: { color: COLORS.text, fontSize: 18, fontWeight: "700" },
   scanSubprompt: { color: "#B1B4AA", fontSize: 12, textAlign: "center", lineHeight: 19, marginTop: 8 },
-  scanSuccess: { color: COLORS.accent, fontSize: 10, fontWeight: "800", letterSpacing: 1.4 },
-  scanSuccessCopy: { color: COLORS.text, fontSize: 13, marginTop: 8 },
+  cornervalid: { borderColor: "#B8F28B" },
+  cornerinvalid: { borderColor: COLORS.error },
+  cornerduplicate: { borderColor: "#FFC857" },
+  corneroffline: { borderColor: "#FFC857" },
+  cornererror: { borderColor: COLORS.error },
+  resultPanel: { width: "100%", borderRadius: 12, borderWidth: 1, padding: 14, alignItems: "center" },
+  resultPanelvalid: { borderColor: "#B8F28B", backgroundColor: "rgba(184,242,139,0.12)" },
+  resultPanelinvalid: { borderColor: COLORS.error, backgroundColor: "rgba(255,141,128,0.12)" },
+  resultPanelduplicate: { borderColor: "#FFC857", backgroundColor: "rgba(255,200,87,0.12)" },
+  resultPaneloffline: { borderColor: "#FFC857", backgroundColor: "rgba(255,200,87,0.12)" },
+  resultPanelerror: { borderColor: COLORS.error, backgroundColor: "rgba(255,141,128,0.12)" },
+  resultTitle: { fontSize: 12, fontWeight: "900", letterSpacing: 1.1, textAlign: "center" },
+  resultTextvalid: { color: "#B8F28B" },
+  resultTextinvalid: { color: COLORS.error },
+  resultTextduplicate: { color: "#FFC857" },
+  resultTextoffline: { color: "#FFC857" },
+  resultTexterror: { color: COLORS.error },
+  resultMessage: { color: COLORS.text, fontSize: 12, lineHeight: 18, marginTop: 7, textAlign: "center" },
   permissionPanel: { alignItems: "center", justifyContent: "center", flex: 1, padding: 30 },
   permissionTitle: { color: COLORS.text, fontSize: 20, fontWeight: "700", textAlign: "center" },
   permissionCopy: { color: "#B1B4AA", fontSize: 13, lineHeight: 20, textAlign: "center", marginTop: 10 }
