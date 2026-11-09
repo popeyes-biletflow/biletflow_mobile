@@ -14,13 +14,13 @@ import {
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Speech from "expo-speech";
 import * as SecureStore from "expo-secure-store";
-import { getAssignedEvents, isNetworkError, signIn, validateTicket } from "./src/adminApi";
+import EventOperations from "./src/EventOperations";
+import { API_CAPABILITIES, getAvailableEvents, isNetworkError, signIn, validateTicket } from "./src/adminApi";
 import {
   cacheEvents,
   cacheScan,
   clearLocalCache,
-  getCachedEvents,
-  getCachedScan
+  getCachedEvents
 } from "./src/localCache";
 
 const TOKEN_KEY = "biletflow_admin_access_token";
@@ -164,15 +164,15 @@ function EventsScreen({ events, error, onSelect, onSignOut }) {
       <ScrollView contentContainerStyle={styles.eventsContent}>
         <Text style={styles.sectionKicker}>YOUR WORKSPACE</Text>
         <Text style={styles.heading}>Choose an event</Text>
-        <Text style={styles.bodyCopy}>Select an assigned event to open its ticket scanner.</Text>
+        <Text style={styles.bodyCopy}>Select an event to open its ticket scanner.</Text>
 
         {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
 
         {events.length === 0 ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIcon}><Text style={styles.emptyIconText}>—</Text></View>
-            <Text style={styles.emptyTitle}>No events assigned yet</Text>
-            <Text style={styles.emptyCopy}>When an organizer assigns you to an event, it will appear here.</Text>
+            <Text style={styles.emptyTitle}>No events available</Text>
+            <Text style={styles.emptyCopy}>Events returned by the platform will appear here.</Text>
           </View>
         ) : (
           <View style={styles.eventList}>
@@ -198,26 +198,37 @@ function EventsScreen({ events, error, onSelect, onSignOut }) {
             ))}
           </View>
         )}
-        <Text style={styles.footer}>ONLY EVENTS ASSIGNED TO YOUR ACCOUNT ARE SHOWN</Text>
+        <Text style={styles.footer}>{API_CAPABILITIES.assignedEvents ? "ONLY EVENTS ASSIGNED TO YOUR ACCOUNT ARE SHOWN" : "EVENTS AVAILABLE ON THE PLATFORM"}</Text>
       </ScrollView>
     </View>
   );
 }
 
-function ScannerScreen({ event, token, onBack }) {
+function ScannerScreen({ event, token, onValidated, canUndo, undoBusy, onUndo, onBusyChange, active }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [result, setResult] = useState(null);
   const [processing, setProcessing] = useState(false);
   const processingRef = useRef(false);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      onBusyChange(false);
+      Speech.stop();
+    };
+  }, [onBusyChange]);
 
   function showResult(nextResult) {
+    if (!mounted.current) return;
     setResult(nextResult);
     Speech.stop();
     Speech.speak(nextResult.speech);
   }
 
   async function handleBarcodeScanned({ data }) {
-    if (processingRef.current || result) return;
+    if (!active || processingRef.current || result) return;
     if (typeof data !== "string" || !data.trim()) {
       showResult({
         status: "error",
@@ -230,22 +241,10 @@ function ScannerScreen({ event, token, onBack }) {
 
     processingRef.current = true;
     setProcessing(true);
+    onBusyChange(true);
     Speech.stop();
     Speech.speak("Checking ticket");
     try {
-      const previousScan = await getCachedScan(event.id, data);
-      if (previousScan) {
-        showResult({
-          status: previousScan.valid ? "duplicate" : "invalid",
-          title: previousScan.valid ? "ALREADY SCANNED" : "PREVIOUSLY INVALID",
-          message: previousScan.valid
-            ? "This ticket was already validated on this device."
-            : previousScan.message || "This ticket was previously rejected.",
-          speech: previousScan.valid ? "Ticket already scanned" : "Ticket not valid"
-        });
-        return;
-      }
-
       let validation;
       try {
         validation = await validateTicket(token, event.id, data);
@@ -260,7 +259,9 @@ function ScannerScreen({ event, token, onBack }) {
         return;
       }
 
+      if (mounted.current) onValidated();
       const nextResult = {
+        ticketId: validation.ticketId,
         status: validation.valid ? "valid" : "invalid",
         title: validation.valid ? "TICKET VALID" : "TICKET NOT VALID",
         message: validation.message || (
@@ -274,7 +275,7 @@ function ScannerScreen({ event, token, onBack }) {
       try {
         await cacheScan(event.id, data, validation);
       } catch (cacheError) {
-        nextResult.message += " The result could not be saved for offline duplicate checks.";
+        nextResult.message += " The scan history could not be saved.";
       }
       showResult(nextResult);
     } catch (scanError) {
@@ -286,7 +287,10 @@ function ScannerScreen({ event, token, onBack }) {
       });
     } finally {
       processingRef.current = false;
-      setProcessing(false);
+      if (mounted.current) {
+        setProcessing(false);
+        onBusyChange(false);
+      }
     }
   }
 
@@ -296,7 +300,7 @@ function ScannerScreen({ event, token, onBack }) {
       {permission?.granted ? (
         <CameraView
           barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-          onBarcodeScanned={result || processing ? undefined : handleBarcodeScanned}
+          onBarcodeScanned={!active || result || processing ? undefined : handleBarcodeScanned}
           style={StyleSheet.absoluteFill}
         />
       ) : (
@@ -304,17 +308,6 @@ function ScannerScreen({ event, token, onBack }) {
       )}
 
       <View style={styles.scannerOverlay}>
-        <View style={styles.scannerHeader}>
-          <Pressable accessibilityRole="button" onPress={onBack} style={styles.backButton}>
-            <Text style={styles.backArrow}>‹</Text>
-          </Pressable>
-          <View style={styles.scannerHeaderText}>
-            <Text style={styles.scannerKicker}>SCANNING FOR</Text>
-            <Text numberOfLines={1} style={styles.scannerEventName}>{event.name}</Text>
-          </View>
-          <View style={styles.readyBadge}><View style={styles.liveDot} /><Text style={styles.readyText}>{processing ? "CHECKING" : "LIVE"}</Text></View>
-        </View>
-
         {!permission ? (
           <View style={styles.permissionPanel}><ActivityIndicator color={COLORS.accent} /></View>
         ) : !permission.granted ? (
@@ -352,8 +345,16 @@ function ScannerScreen({ event, token, onBack }) {
                     <Text style={[styles.resultTitle, styles[`resultText${result.status}`]}>{result.title}</Text>
                     <Text style={styles.resultMessage}>{result.message}</Text>
                   </View>
+                  {result.status === "valid" && result.ticketId && canUndo && (
+                    <PrimaryButton label="Undo this check-in" secondary loading={undoBusy}
+                      onPress={() => onUndo(result.ticketId, () => showResult({
+                        status: "duplicate", title: "CHECK-IN REVERSED",
+                        message: "This ticket is no longer checked in.", speech: "Check-in reversed"
+                      }))} />
+                  )}
                   <PrimaryButton
                     label="Scan next ticket"
+                    disabled={undoBusy}
                     onPress={() => setResult(null)}
                   />
                 </>
@@ -393,12 +394,12 @@ export default function App() {
 
         setToken(storedToken);
         try {
-          const assignedEvents = await getAssignedEvents(storedToken);
+          const assignedEvents = await getAvailableEvents(storedToken);
           let cacheWarning = "";
           try {
             await cacheEvents(assignedEvents);
           } catch (cacheError) {
-            cacheWarning = "Assigned events could not be saved for offline use.";
+            cacheWarning = "Events could not be saved for offline use.";
           }
           if (!active) return;
           setEvents(assignedEvents);
@@ -409,10 +410,10 @@ export default function App() {
           const cachedEvents = await getCachedEvents();
           if (!active) return;
           if (cachedEvents === null) {
-            throw new Error("You're offline and no assigned events are cached on this device.");
+            throw new Error("You're offline and no events are cached on this device.");
           }
           setEvents(cachedEvents);
-          setError("Offline: showing assigned events saved on this device.");
+          setError("Offline: showing events saved on this device.");
           setScreen("events");
         }
       } catch (restoreError) {
@@ -436,14 +437,14 @@ export default function App() {
     setError("");
     try {
       const accessToken = await signIn(email, password);
-      const assignedEvents = await getAssignedEvents(accessToken);
+      const assignedEvents = await getAvailableEvents(accessToken);
       await SecureStore.setItemAsync(TOKEN_KEY, accessToken);
       setToken(accessToken);
       setEvents(assignedEvents);
       try {
         await cacheEvents(assignedEvents);
       } catch (cacheError) {
-        setError("Signed in, but assigned events could not be saved for offline use.");
+        setError("Signed in, but events could not be saved for offline use.");
       }
       setScreen("events");
     } catch (signInError) {
@@ -490,10 +491,14 @@ export default function App() {
           onSignOut={handleSignOut}
         />
       ) : (
-        <ScannerScreen
+        <EventOperations
+          key={selectedEvent.id}
           event={selectedEvent}
           token={token}
           onBack={() => { setError(""); setScreen("events"); }}
+          renderScanner={(scannerProps) => (
+            <ScannerScreen event={selectedEvent} token={token} {...scannerProps} />
+          )}
         />
       )}
     </View>
@@ -562,7 +567,7 @@ const styles = StyleSheet.create({
   readyBadge: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1, borderColor: "rgba(214,251,84,0.35)", backgroundColor: "rgba(214,251,84,0.12)", borderRadius: 20, paddingHorizontal: 9, paddingVertical: 7 },
   readyText: { color: COLORS.accent, fontSize: 9, fontWeight: "800", letterSpacing: 1 },
   viewfinderArea: { alignItems: "center", justifyContent: "center", flex: 1 },
-  viewfinder: { width: 256, height: 256, position: "relative" },
+  viewfinder: { width: 190, height: 190, position: "relative" },
   corner: { position: "absolute", width: 31, height: 31, borderColor: COLORS.accent },
   cornerTopLeft: { top: 0, left: 0, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: 12 },
   cornerTopRight: { top: 0, right: 0, borderTopWidth: 4, borderRightWidth: 4, borderTopRightRadius: 12 },
@@ -570,7 +575,7 @@ const styles = StyleSheet.create({
   cornerBottomRight: { bottom: 0, right: 0, borderBottomWidth: 4, borderRightWidth: 4, borderBottomRightRadius: 12 },
   scanLine: { height: 2, backgroundColor: COLORS.accent, position: "absolute", left: 16, right: 16, top: "49%", shadowColor: COLORS.accent, shadowOpacity: 0.9, shadowRadius: 9, elevation: 4 },
   viewfinderHint: { color: COLORS.text, fontSize: 13, textAlign: "center", marginTop: 24, paddingHorizontal: 28, textShadowColor: "#000", textShadowRadius: 6 },
-  scannerBottom: { alignItems: "center", paddingHorizontal: 26, paddingTop: 24, paddingBottom: Platform.OS === "ios" ? 42 : 26, backgroundColor: "rgba(8,9,8,0.82)" },
+  scannerBottom: { alignItems: "center", paddingHorizontal: 26, paddingTop: 12, paddingBottom: 16, backgroundColor: "rgba(8,9,8,0.82)" },
   scanPrompt: { color: COLORS.text, fontSize: 18, fontWeight: "700" },
   scanSubprompt: { color: "#B1B4AA", fontSize: 12, textAlign: "center", lineHeight: 19, marginTop: 8 },
   cornervalid: { borderColor: "#B8F28B" },
