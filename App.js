@@ -323,9 +323,9 @@ function ScannerScreen({ event, token, onValidated, canUndo, undoBusy, onUndo, o
             <View style={styles.viewfinderArea}>
               <View style={styles.viewfinder}>
                 <View style={[styles.corner, styles.cornerTopLeft, result && styles[`corner${result.status}`]]} />
-                <View style={[styles.corner, styles.cornerTopRight, result && styles[`corner${result.status}`]} />
-                <View style={[styles.corner, styles.cornerBottomLeft, result && styles[`corner${result.status}`]} />
-                <View style={[styles.corner, styles.cornerBottomRight, result && styles[`corner${result.status}`]} />
+                <View style={[styles.corner, styles.cornerTopRight, result && styles[`corner${result.status}`]]} />
+                <View style={[styles.corner, styles.cornerBottomLeft, result && styles[`corner${result.status}`]]} />
+                <View style={[styles.corner, styles.cornerBottomRight, result && styles[`corner${result.status}`]]} />
                 {!result && <View style={styles.scanLine} />}
               </View>
               <Text style={styles.viewfinderHint}>
@@ -342,7 +342,7 @@ function ScannerScreen({ event, token, onValidated, canUndo, undoBusy, onUndo, o
                     accessibilityRole="alert"
                     style={[styles.resultPanel, styles[`resultPanel${result.status}`]]}
                   >
-                    <Text style={[styles.resultTitle, styles[`resultText${result.status}`]}>{result.title}</Text>
+                    <Text style={[styles.resultTitle, styles[`resultText${result.status}`]]}>{result.title}</Text>
                     <Text style={styles.resultMessage}>{result.message}</Text>
                   </View>
                   {result.status === "valid" && result.ticketId && canUndo && (
