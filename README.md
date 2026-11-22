@@ -1,69 +1,91 @@
-# BiletFlow Event Admin Mobile
+# BiletFlow mobile (Expo / React Native)
 
-Expo / React Native client for the BiletFlow FastAPI backend. Supabase is used by the backend; the mobile app calls FastAPI, not the Supabase project URL.
+The BiletFlow app for phones: **everything the web app does, plus the door QR scanner** (SRS 4.8).
+It talks to the BiletFlow FastAPI backend (`biletflow_web/backend`); Supabase is used only by the backend.
+The UI follows biletflow_web: same palette (white header with the blue BiletFlow wordmark, blue-600 actions,
+emerald/red/amber notices, rounded white cards), and the **web's own KK / RU / EN dictionaries**
+(`src/locales/*.js`, copied by `node tools/sync-web-locales.mjs`), so every shared screen uses identical wording.
 
-## Local setup
-
-1. Install mobile dependencies with `npm install`.
-2. In the web repository, configure the backend's server-only environment and install its Python requirements. Start it from `biletflow_web/backend`:
-
-   ```sh
-   uvicorn main:app --host 0.0.0.0 --port 8000
-   ```
-
-3. Configure this repository's `.env`:
-
-   ```env
-   EXPO_PUBLIC_API_URL=http://192.168.0.157:8000
-   EXPO_PUBLIC_API_MODE=web
-   ```
-
-   This LAN address was detected on the development computer during integration. A physical phone must use the same Wi-Fi network. Update the address if the computer's IP changes. This URL works only while that backend is running and reachable; it is not a deployed public endpoint. For the iOS simulator on the same Mac use `http://127.0.0.1:8000`; for the standard Android emulator use `http://10.0.2.2:8000`.
-
-4. Run `npx expo start --clear` after changing environment variables.
-
-HTTP is accepted only by development builds for loopback/private network addresses. Production requires the deployed FastAPI HTTPS origin, without an `/api` suffix. A hosted frontend URL works only if that hosting explicitly proxies `/api` to FastAPI. Never put `SUPABASE_KEY`, a service-role key, or `QR_SECRET` in `EXPO_PUBLIC_*` variables.
-
-No deployed API URL was found in the inspected web source. Check `<backend-origin>/docs` to verify the routes on the actual running deployment.
-
-## Default web integration
-
-`EXPO_PUBLIC_API_MODE=web` matches the locally inspected `biletflow_web` main commit `15a390d737b3152a8e67b1f4b85049561425ea16`. GitHub access was declined, so this does not assert compatibility with a newer remote main.
-
-| Operation | Existing web contract |
+| Web page / feature | Mobile screen |
 | --- | --- |
-| Sign in | `POST /api/auth/login`, `{ email, password }` → `{ access_token, refresh_token, user_id, email }` |
-| Staff profile / session | `GET /api/users/me` with Bearer token |
-| Event selection | `GET /api/events` → array of event rows |
-| Connection heartbeat | Authenticated profile check followed by `GET /api/events/{eventId}` |
-| QR check-in | `POST /api/tickets/verify`, `{ qr_payload }` → `{ valid, message, ticket_id }` |
+| Events (search, categories, cards with "from" price) | Events tab |
+| Event details (dates, venue, tiers, seating layout, maps, `.ics`, ask organizer) | Event screen (calendar file opens the share sheet) |
+| Checkout modal (hold timer, promo code, attendee details, demo approve/decline, free registration) | Checkout screen |
+| My orders (filters, PDF, help, cancellation request) · Order page · Ticket view with QR | Orders tab · Order · E-ticket (QR on screen, A4 PDF via share sheet) |
+| Login, sign-up with email confirmation, forgot password, profile (payout for organizers) | Account tab · Sign in · Sign up · Reset · Profile |
+| Support cases, contextual new case, thread with status/assign/escalate, notification bell | Support tab · Case · Bell in the header (30 s polling, like the web) |
+| Organizer dashboard (stats, phases, publish/unpublish/cancel), analytics with filters and sales chart | Organizer tab · Analytics |
+| Event management: editor, ticket types, paid-sales activation checklist | Manage event (tabs) |
+| **Mobile extra:** staff assignment for an event (FS-04 API) | Manage event → Check-in staff |
+| **Mobile extra:** QR scanner, attendee lookup, manual check-in/undo, live counts, scan timing | Scan tab (staff, organizers, platform admins) |
 
-The client maps `title`/`name`, `starts_at`/`start_time`/`date`/`event_date`, and `venue_name`/`venue`/`location` to the mobile display fields. The web events route returns a public event list, not staff assignments; the UI identifies it accordingly. The client requires a profile role of `event_admin`, `organizer`, or `admin` (case-insensitive, spaces/hyphens normalized) before displaying events or submitting QR verification. Align this allowlist with the deployed role vocabulary if it differs. This is a client access check, not a replacement for backend authorization.
+Tabs depend on the role from `/api/users/me`: guests see Events + Account; attendees add Orders and Support;
+organizers add Organizer and Scan; event staff add Scan. The server still authorizes every request.
 
-QR payloads use `ticket_id:event_id:user_id:expires_at:signature`. A malformed payload or a payload for a different selected event is rejected before sending the mutating request. HMAC verification stays on the server. FastAPI `detail` errors are displayed; 400/404/409 verification responses become invalid-ticket results. Bearer tokens are sent on requests even though the inspected verify route does not enforce them.
+### Scanner tickets (FS-21 – FS-25)
 
-The connection indicator checks the session and selected event every five seconds after the previous check completes, on foregrounding, and after scans. It reports connection health only. The current web backend has no attendee search, manual check-in, undo, or attendance counter endpoints; these operations are unavailable in web mode rather than producing fabricated totals or repeated 404s. `/api/tickets` is deliberately not used: it returns SQLite ticket types, not event attendees.
+| Ticket | What the app does |
+| --- | --- |
+| FS-21 | Tokens in SecureStore, refresh on 401, expired-session message; Scan tab lists events from `/api/mobile/events`; a revoked assignment (403) blocks actions; sign-out revokes the session and clears all user data on the device. |
+| FS-22 | Camera scanner; one request at a time; campaign, malformed and other-event QR rejected **on the device without calling the admission endpoint**; specific result text + colour + speech + vibration; network failure shows "NOT admitted"; every online check timed against the 2 s SRS target (Scan log tab, shareable). |
+| FS-23 | Attendee search, manual check-in and undo with confirmation, live counters (5 s, after changes, on foreground); stale data disables writes. |
+| FS-24 | `npm test`, fixtures and the release test matrix: [docs/RELEASE_TEST_MATRIX.md](docs/RELEASE_TEST_MATRIX.md). |
+| FS-25 | Docker demo, env templates, migrations/seed order, backup/restore, demo script: [deploy/README.md](deploy/README.md). |
 
-## Extended mobile contract
+## Run
 
-The previously added attendee search, manual check-in, undo, and live attendance UI is retained behind `EXPO_PUBLIC_API_MODE=mobile`. Enable this mode only when the central backend implements **all** of these routes:
+```sh
+npm install
+cp .env.example .env        # set EXPO_PUBLIC_API_URL (see below)
+npx expo start --clear      # scan the QR with Expo Go, or press i / a for a simulator
+npm test                    # unit + contract tests (mocked HTTP)
+```
 
-- `POST /api/mobile/auth/login` accepts `{ "email": "...", "password": "..." }` and returns `{ "accessToken": "..." }`.
-- `GET /api/mobile/events` returns `{ "events": [{ "id": "e1", "name": "Concert", "venue": "Hall", "startsAt": "ISO-8601" }] }`, scoped to the staff member's assignments.
-- `POST /api/mobile/events/{eventId}/tickets/validate` accepts `{ "qrPayload": "..." }` and returns `{ "valid": true, "message": "...", "ticketId": "t1" }`. `ticketId` enables direct scan undo.
-- `GET /api/mobile/events/{eventId}/attendance` returns `{ "checkedIn": 145, "total": 200, "canUndoCheckIn": true }`. Counts must be nonnegative integers with `checkedIn <= total`.
-- `GET /api/mobile/events/{eventId}/attendees?search=...&cursor=...&limit=50` searches all attendees by name, email, or ticket ID. Returns `{ "attendees": [{ "ticketId": "t1", "name": "Alex", "email": "alex@example.com", "checkedIn": false }], "nextCursor": null }`. Use stable ordering and opaque cursors.
-- `POST /api/mobile/events/{eventId}/tickets/check-in` accepts `{ "ticketId": "t1" }` and succeeds only after check-in commits.
-- `POST /api/tickets/undo-checkin` accepts `{ "eventId": "e1", "ticketId": "t1" }` and succeeds only after reversal commits.
+### API origin (`EXPO_PUBLIC_API_URL`)
 
-All routes must authorize the authenticated staff member for the event. Mutations must check ticket/event membership, ticket status, and permissions, commit atomically, and record audit information. Undo requires a fresh server-side permission check; the UI boolean only controls button visibility. Return 401 for expired sessions and 403 for forbidden actions.
+FastAPI must listen on all interfaces: `uvicorn main:app --host 0.0.0.0 --port 8000` (or the Docker demo).
 
-In mobile mode search is debounced by 300 ms, check-in and undo require confirmation, and the current page and attendance counters refresh every five seconds after the previous refresh finishes. Failed syncs retain old data with an outdated indicator and disable manual actions. This is polling, not a push subscription.
+| Where the app runs | Value |
+| --- | --- |
+| Physical phone (same Wi-Fi as the computer) | `http://<computer LAN IPv4>:8000`, e.g. `http://192.168.0.157:8000` |
+| iOS simulator on the same Mac | `http://127.0.0.1:8000` |
+| Android emulator | `http://10.0.2.2:8000` |
+| Release build | the deployed `https://` FastAPI origin |
 
-## Storage and validation
+Rules enforced by the app: origin only (no `/api`, query or credentials), never a `*.supabase.co` URL,
+plain HTTP only in development builds and only for private/loopback addresses. Restart Expo with `--clear`
+after changing `.env`. Never put `SUPABASE_KEY`, a service-role key or `QR_SECRET` in `EXPO_PUBLIC_*`.
 
-Access tokens use Expo SecureStore. Event lists and scan history use AsyncStorage and are cleared on sign-out. QR payloads/messages are unencrypted on-device; attendee results stay in memory only. Every scan consults the backend so stale cached results cannot block a reversed ticket. Offline scans never authorize admission. Requests time out after 15 seconds; writes are not automatically retried or queued. Following an interrupted write, staff must verify the central ticket status before retrying. Refresh-token rotation is not implemented; sign in again after session expiry.
+`EXPO_PUBLIC_WEB_URL` (optional) enables "Forgot password?", which opens the web reset page.
 
-Run `npm test` for web-adapter and extended-contract tests. These use mocked responses; they do not establish that a backend is deployed. Device testing requires Expo dependencies and the running backend.
+## Structure
 
-See [the integration review](docs/MOBILE_INTEGRATION.md) for remaining backend requirements and a device test checklist.
+```
+App.js                    navigation: role-based bottom tabs + detail stack, header bell and language switcher
+src/api.js                API client for every web endpoint + scanner; tokens, refresh      (pure JS, tested)
+src/models.js             web rules ported: event normalizer, availability, checkout codes, .ics (pure JS, tested)
+src/auth.js, notifications.js   session (any role) and 30 s notification polling
+src/files.js              ticket PDF download + .ics -> system share sheet; map links
+src/ui.js                 web-style blocks: sections, stats, tabs, select/date pickers, QR renderer
+src/locales/*.js          copy of the biletflow_web dictionaries (tools/sync-web-locales.mjs)
+src/qr.js                 QR classification + server-error mapping                         (pure JS, tested)
+src/stats.js              scan latency summary vs 2 s target                               (pure JS, tested)
+src/strings.js            KK/RU/EN copy and web date format                                (pure JS, tested)
+src/sessionStore.js       SecureStore (memory only in the web preview)
+src/localCache.js         per-user event cache (AsyncStorage), cleared on sign-out
+src/components.js         Navbar, LanguageSwitcher, Button, Field, Notice, Card, Badge, PillTabs, ConfirmDialog
+src/screens/*             Discover, EventDetails, Checkout, Orders, Order, Ticket, Support*, Account*, Organizer*, Checkin*
+tools/make-test-qr.mjs    printable QR sheet with every scanner outcome (needs QR_SECRET)
+deploy/                   Docker Compose demo, fixtures, backup/restore
+```
+
+## Storage and security
+
+- Tokens: Expo SecureStore only. Language choice: AsyncStorage (kept after sign-out, like the web).
+- Event list cache: AsyncStorage, keyed to the user, removed on sign-out or when another account signs in.
+- Attendee rosters, QR payloads and scan logs are kept in memory only.
+- Offline: cached events can be browsed, but **no offline admission** — every scan needs the server
+  (SRS: online verification only). Writes are never queued or retried automatically.
+- Client checks (role, campaign/other-event QR) are convenience; the backend remains the authority.
+
+See [docs/MOBILE_INTEGRATION.md](docs/MOBILE_INTEGRATION.md) for the backend contract and open backend gaps.

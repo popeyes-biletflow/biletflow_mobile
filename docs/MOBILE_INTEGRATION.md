@@ -1,45 +1,73 @@
-# Web/mobile integration review
+# Mobile ↔ backend integration (FS-21 – FS-23)
 
-Scope: mobile-side integration with the available local `biletflow_web` checkout, commit `15a390d737b3152a8e67b1f4b85049561425ea16`. The local main and locally cached origin/main both point to this commit. A fresh GitHub clone could not be completed because network approval was declined; no claim is made about newer remote commits or branches. No web/backend files were modified.
+Reviewed against `biletflow_web` main `7a89773c01dc0ac97a2038f72de504b91c149687` (FS-01…FS-05, FS-16…FS-20 merged).
+The mobile app was changed only in this repository; no web/backend file was modified.
 
-## Verified mismatches and mobile changes
+## Contract used by the app
 
-| Previous mobile assumption | Inspected backend source | Mobile change |
+| Purpose | Request | Response used |
 | --- | --- | --- |
-| `/api/mobile/auth/login`, camelCase token | `backend/main.py`: `/api/auth/login`, `access_token` | Web adapter maps the actual response |
-| `/api/mobile/events`, `{ events: [...] }`, assigned events | `backend/main.py`: `/api/events`, raw public array | Authenticate profile first, normalize array, label as platform events |
-| `name`, `startsAt`, `venue` only | `frontend/src/services/events.ts`: title/date/venue column aliases | Match supported display aliases without inventing an event date |
-| Event-specific validate route with `qrPayload` | `backend/routers/tickets.py`: `/api/tickets/verify`, `qr_payload`, `ticket_id` | Match actual route and fields, reject cross-event QR before mutation |
-| Error payload `message`/`error` | FastAPI uses `detail` | Preserve backend error explanations |
-| HTTPS only during local development | Web client defaults to `http://localhost:8000` | Permit private-network HTTP only in development; retain HTTPS for release |
-| Attendance/search/undo APIs already exist | No corresponding routes in inspected main | Disable unsupported operations in default web mode; retain extended mode for a future backend |
+| Sign in | `POST /api/auth/login {email, password}` | `access_token`, `refresh_token`, `user_id`, `email`; 401 wrong credentials; 403 `EMAIL_NOT_CONFIRMED` / suspended |
+| Refresh | `POST /api/auth/refresh {refresh_token}` | new token pair; 401 = session over |
+| Sign out | `POST /api/auth/logout` (Bearer) | revokes refresh token (fire-and-forget) |
+| Profile / role | `GET /api/users/me` | `id`, `email`, `full_name`, `role`, `is_suspended` |
+| Assigned events | `GET /api/mobile/events` | `{events: [{id, name, venue, startsAt}]}` |
+| Cover images | `GET /api/events` (public) | `image_url`, `category`, `timezone`, `organizer_id` merged by id — never adds events |
+| QR check-in | `POST /api/mobile/events/{id}/tickets/validate {qrPayload}` | 200 `{valid, ticketId, message}`; 400/404/409 with `detail` → result code |
+| Counters | `GET /api/mobile/events/{id}/attendance` | `{checkedIn, total, canUndoCheckIn}` |
+| Roster | `GET /api/mobile/events/{id}/attendees?search=&cursor=&limit=50` | `{attendees: [{ticketId, name, email, checkedIn}], nextCursor}` |
+| Manual check-in | `POST /api/mobile/events/{id}/tickets/check-in {ticketId}` | 200; 409 already used |
+| Undo | `POST /api/tickets/undo-checkin {eventId, ticketId}` | 200; 403 denied |
 
-## Remaining backend blockers
+Any 401 triggers one token refresh and one retry (safe: FastAPI rejects 401 before the handler runs). A
+403 on an event-scoped call is treated as a revoked/missing assignment.
 
-1. The inspected `/api/tickets/verify` has no authentication dependency or staff/event authorization. Adding a bearer header and checking the profile in the mobile app does not secure a publicly callable endpoint. Enforce these checks in FastAPI.
-2. Verify reads ticket status and then updates it without an atomic conditional transition. Concurrent scanners can both receive success. The backend must perform an atomic `valid → checked_in` transition and reject other ticket statuses, including cancelled/refunded tickets.
-3. The verified QR includes an event ID, but the legacy ticket lookup selects only `id, status`. The backend must validate stored event/user/signature membership and reject tickets that do not match the verified payload. The mobile event precheck prevents accidental cross-event calls but cannot establish database consistency.
-4. No event-assignment API exists in this checkout. Public events must not be treated as a server-authorized staff assignment list.
-5. Attendee search, central attendance totals, manual check-in, and undo need authorized backend endpoints. `/api/tickets` in `promo.py` lists SQLite ticket types and cannot supply attendance.
-6. The QR helper defaults to 72-hour expiry, potentially expiring tickets before the event. The client must not bypass server expiry or hold `QR_SECRET`; fix ticket issuance on the backend.
-7. Backend HTTP clients use `verify=False`. Enable certificate verification on the server. This cannot be repaired by mobile configuration.
+### Result codes shown by the scanner
 
-## API URL
+| Code | Source | Shown as |
+| --- | --- | --- |
+| `CHECKED_IN` | 200 valid | green "Valid — admitted" |
+| `ALREADY_USED` | 409 | amber "Already used" |
+| `WRONG_EVENT` | device (payload event ≠ selected) or 400 | red, no request sent when detected on device |
+| `CAMPAIGN_QR` | device (HTTPS / `/c/<slug>` / `?promo=`) | red "Promo QR — not a ticket", no request sent |
+| `INVALID_FORMAT` | device | red "Not a ticket", no request sent |
+| `EXPIRED`, `INVALID_SIGNATURE`, `NOT_FOUND` | 400 / 404 `detail` | red, specific text |
+| `CANCELLED_OR_REFUNDED` (`CANCELLED`, `REFUNDED` if the backend separates them) | 400 `detail` | red, specific text |
+| `OFFLINE` | network error / timeout | amber "No connection — NOT admitted" |
+| `FORBIDDEN` | 403 | red; event access revoked |
 
-No deployed API origin was present in the inspected tracked configuration. During this session the computer's active Wi-Fi IPv4 address was `192.168.0.157`. `.env` is configured as `http://192.168.0.157:8000`, mode `web`, for a phone on the same Wi-Fi after starting FastAPI with `--host 0.0.0.0 --port 8000`. This is a local development address, not proof that a service is already running or reachable. Use a deployed HTTPS FastAPI origin for production. A Supabase project URL cannot serve these custom FastAPI routes.
+## Backend gaps found (owners: FS-04 Baibol, FS-06 Ibragim)
 
-## Verification
+These are outside the mobile repository. The app does not hide them; FS-24 tracks them as open items.
 
-Automated mocked contract tests cover real web routes, snake_case normalization, staff profile checks, cross-event rejection before mutation, FastAPI conflict messages, unavailable-feature behavior, connection checks, local/production URL validation, and the optional extended mobile contract.
+1. **Unassigned staff see every event.** `GET /api/mobile/events` falls back to *all* events when an
+   `event_admin` has no `event_staff` rows, and `assert_staff_assigned_to_event` allows such a user on any
+   event. FS-21 acceptance ("never see unassigned B") holds only when every staff account has at least
+   one assignment. Fix: return an empty list / 403 instead of the fallback.
+2. **RLS blocks assigned staff.** The mobile endpoints use the caller's JWT, but RLS on `tickets` only
+   allows owners (attendee) and event organizers to read. An assigned `event_admin` can get "Ticket not
+   found" / empty rosters / zero counts. Organizers of their own events are not affected. Fix: SECURITY
+   DEFINER RPCs that check the assignment, or a server-side service client after the FastAPI check.
+3. **Admission is not atomic.** `validate` and `check-in` read the status and then update it without a
+   conditional `WHERE status='valid'`; two parallel scans can both succeed. Migration 008 already contains
+   `checkin_ticket_atomic` / `undo_checkin_atomic` but the routes do not call them.
+4. **Manual check-in ignores cancelled/refunded status** (only rejects `checked_in`).
+5. **Undo permission is not per assignment.** `canUndoCheckIn` is always `true` and any staff role can undo;
+   FS-23 needs an assignment flag (e.g. `event_staff.can_undo`) checked by the API.
+6. **Cancelled vs refunded** share one message (`Ticket is cancelled or refunded.`), so the app shows a
+   combined result. Separate details would let it show "Cancelled" / "Refunded" (already supported).
+7. **Roster paging.** `attendees` returns `nextCursor: null` and truncates to `limit`; searches beyond the
+   first 50 matches are not reachable. The app already sends/handles opaque cursors.
+8. **Audit insert failures are swallowed** in the mobile routes (`except: pass`).
 
-To verify against a running platform:
+## Device checklist
 
-1. Open `<backend-origin>/docs` on the phone and confirm actual route availability.
-2. Sign in with an existing staff profile; confirm an attendee profile is rejected by the client.
-3. Select an event and scan a real signed QR issued for that event. Confirm the central ticket changes state.
-4. Scan the same ticket again; expect the server's 409 explanation. Scan a different-event ticket; confirm no verify request is sent.
-5. Disconnect and foreground the app; verify connection-state recovery and that no offline admission is granted.
-6. Test on two scanners concurrently after the backend atomicity fix.
-7. Enable extended mode only after its routes exist; then verify cross-device manual check-in, authorized/forbidden undo, counters, and a re-scan following reversal.
-
-Full device, live database, and deployed-server tests were not performed during this mobile-side integration.
+1. Set `EXPO_PUBLIC_API_URL` for the device type (README), start FastAPI on `0.0.0.0:8000`, open `<origin>/docs` on the phone.
+2. Sign in as an attendee → refused with the staff-only message, nothing stored.
+3. Sign in as staff assigned to A → only A listed (needs gap 1 fixed if the account has no assignments at all).
+4. Sign in as the organizer → own events listed with "Your event"; scanning works.
+5. Run the QR test sheet (`tools/make-test-qr.mjs`) — expected outcomes are printed on the sheet.
+6. Airplane mode during a scan → "No connection — NOT admitted"; reconnect → fresh scan works.
+7. Organizer removes the staff assignment → next poll shows the revoked banner, actions disabled.
+8. Two phones: check in on one, counter changes on the other within ~5 s.
+9. Sign out → sign in as another user → no previous events or scan log visible.

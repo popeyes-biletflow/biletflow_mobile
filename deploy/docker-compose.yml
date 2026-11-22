@@ -1,0 +1,98 @@
+# FS-25: reproducible BiletFlow demo — FastAPI + web (+ demo mailbox).
+# The web/backend code is built straight from the sibling biletflow_web checkout; nothing in that
+# repository is modified. Dockerfiles are inline and COPY only source files, so local .env files,
+# virtualenvs and node_modules from the web checkout never end up in an image.
+#
+#   cp env/api.env.example env/api.env   # fill in Supabase + QR_SECRET (never commit it)
+#   docker compose up --build -d
+#   docker compose ps                    # api / web / mailpit should be "healthy"
+#
+# WEB_REPO: path to the biletflow_web checkout (default: ../../biletflow_web relative to this file).
+# PUBLIC_API_URL: the API origin the browser uses; baked into the web bundle at build time.
+name: biletflow-demo
+
+services:
+  api:
+    build:
+      context: ${WEB_REPO:-../../biletflow_web}/backend
+      dockerfile_inline: |
+        FROM python:3.12-slim
+        ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+        WORKDIR /app
+        # Runtime dependencies only (backend/requirements.txt is a full dev-environment dump in UTF-16).
+        RUN pip install --no-cache-dir \
+              fastapi==0.138.0 "uvicorn[standard]==0.49.0" httpx==0.28.1 pydantic==2.13.4 \
+              email-validator==2.3.0 python-dotenv==1.2.2 python-multipart==0.0.32 \
+              supabase==2.31.0 reportlab==5.1.0
+        COPY *.py ./
+        COPY routers ./routers
+        COPY fonts ./fonts
+        RUN useradd --system --uid 10001 app && mkdir -p /tmp/outbox && chown -R app /app /tmp/outbox
+        USER app
+        EXPOSE 8000
+        CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    env_file: ./env/api.env
+    environment:
+      EMAIL_PREVIEW_DIR: /tmp/outbox
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      VERIFY_SSL: "true"
+    ports:
+      - "8000:8000"   # reachable from phones on the same Wi-Fi: http://<LAN IP>:8000
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ${WEB_REPO:-../../biletflow_web}/frontend
+      args:
+        VITE_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+      dockerfile_inline: |
+        FROM node:22-alpine AS build
+        WORKDIR /src
+        COPY package.json package-lock.json ./
+        RUN npm ci --no-audit --no-fund
+        COPY index.html vite.config.ts tsconfig*.json tailwind.config.js postcss.config.js ./
+        COPY public ./public
+        COPY src ./src
+        ARG VITE_API_URL
+        ENV VITE_API_URL=$${VITE_API_URL}
+        # vite build only: type checking is a CI concern, not a demo-packaging one.
+        RUN npx vite build
+
+        FROM nginx:1.27-alpine
+        RUN printf 'server {\n  listen 80;\n  root /usr/share/nginx/html;\n  location / { try_files $$uri /index.html; }\n  location = /healthz { access_log off; return 200 "ok"; }\n}\n' > /etc/nginx/conf.d/default.conf
+        COPY --from=build /src/dist /usr/share/nginx/html
+        EXPOSE 80
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  # Demo mailbox for verification / reset / ticket emails (FS-20): http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/livez"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped

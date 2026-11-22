@@ -1,65 +1,29 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+// User-specific, non-secret cache. Cleared on sign-out and when another account signs in (FS-21).
+// Attendee rosters and QR payloads are never written to disk.
 const CACHE_PREFIX = "@biletflow/";
 const EVENTS_KEY = `${CACHE_PREFIX}assigned-events`;
-const SCAN_KEY_PREFIX = `${CACHE_PREFIX}scans/`;
 
-function scanKey(eventId) {
-  return `${SCAN_KEY_PREFIX}${encodeURIComponent(eventId)}`;
-}
-
-async function getEventScans(eventId) {
-  const serialized = await AsyncStorage.getItem(scanKey(eventId));
-  if (serialized === null) return [];
-
-  const scans = JSON.parse(serialized);
-  if (!Array.isArray(scans) || scans.some((record) =>
-    !record || typeof record.payload !== "string" ||
-    typeof record.valid !== "boolean" || typeof record.checkedAt !== "string" ||
-    typeof record.message !== "string")) {
-    throw new Error("The locally cached scan history is invalid.");
-  }
-
-  return scans;
-}
-
-export async function getCachedEvents() {
+/** @returns {Promise<{ user: object, events: object[] } | null>} */
+export async function getCachedEvents(userId) {
   const serialized = await AsyncStorage.getItem(EVENTS_KEY);
   if (serialized === null) return null;
-
-  const events = JSON.parse(serialized);
-  if (!Array.isArray(events) || events.some((event) =>
-    !event || typeof event.id !== "string" || typeof event.name !== "string")) {
-    throw new Error("The locally cached event list is invalid.");
+  try {
+    const parsed = JSON.parse(serialized);
+    if (!parsed?.user || parsed.user.id !== userId || !Array.isArray(parsed.events)) return null;
+    return {
+      user: parsed.user,
+      events: parsed.events.filter((event) => event && typeof event.id === "string" && typeof event.name === "string")
+    };
+  } catch {
+    return null;
   }
-
-  return events;
 }
 
-export async function cacheEvents(events) {
-  await AsyncStorage.setItem(EVENTS_KEY, JSON.stringify(events));
-}
-
-export async function getCachedScan(eventId, payload) {
-  const scans = await getEventScans(eventId);
-  const record = scans.find((scan) => scan.payload === payload);
-  if (!record) return null;
-  return record;
-}
-
-export async function cacheScan(eventId, payload, result) {
-  const key = scanKey(eventId);
-  const scans = await getEventScans(eventId);
-  const record = {
-    payload,
-    valid: result.valid,
-    message: result.message || "",
-    checkedAt: new Date().toISOString()
-  };
-  const existingIndex = scans.findIndex((scan) => scan.payload === payload);
-  if (existingIndex < 0) scans.push(record);
-  else scans[existingIndex] = record;
-  await AsyncStorage.setItem(key, JSON.stringify(scans));
+export async function cacheEvents(profile, events) {
+  const user = { id: profile.id, email: profile.email, full_name: profile.full_name || "", role: profile.role };
+  await AsyncStorage.setItem(EVENTS_KEY, JSON.stringify({ user, events, savedAt: new Date().toISOString() }));
 }
 
 export async function clearLocalCache() {
