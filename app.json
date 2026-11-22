@@ -1,11 +1,10 @@
 {
   "expo": {
-    "name": "Biletflow Admin",
+    "name": "BiletFlow",
     "slug": "biletflow-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.biletflow.eventadmin"
@@ -14,18 +13,25 @@
       "package": "com.biletflow.eventadmin",
       "permissions": [
         "android.permission.CAMERA"
-      ]
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff"
+      }
     },
     "plugins": [
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Biletflow Admin to use the camera to scan ticket QR codes.",
+          "cameraPermission": "Allow BiletFlow to use the camera to scan ticket QR codes at the door.",
           "microphonePermission": false,
           "recordAudioAndroid": false
         }
       ],
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "expo-sharing",
+      "@react-native-community/datetimepicker",
+      "expo-font"
+    ],
+    "backgroundColor": "#f9fafb"
   }
 }
