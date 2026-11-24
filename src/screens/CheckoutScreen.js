@@ -11,7 +11,7 @@ const two = (n) => (n < 10 ? `0${n}` : String(n));
 
 // biletflow_web CheckoutModal: select -> hold (15 min, server prices) -> demo payment -> order page.
 export default function CheckoutScreen({ route, navigation }) {
-  const { eventId, promo: initialPromo = "" } = route.params;
+  const { eventId, promo: initialPromo = "", tierId: initialTierId = "" } = route.params;
   const { client, user } = useAuth();
   const { t, formatDate, formatKZT } = useI18n();
   const [event, setEvent] = useState(null);
@@ -34,10 +34,12 @@ export default function CheckoutScreen({ route, navigation }) {
   useEffect(() => {
     client.getEvent(eventId).then((ev) => {
       setEvent(ev);
+      // seat map pre-selects a tier (web initialTierId); fall back to the first purchasable one
+      const wanted = ev.ticketTiers.find((x) => x.id === initialTierId && !whyUnavailable(x, ev));
       const first = ev.ticketTiers.find((x) => !whyUnavailable(x, ev));
-      setTierId(first?.id || "");
+      setTierId((wanted || first)?.id || "");
     }).catch((e) => setError(e.message));
-  }, [client, eventId]);
+  }, [client, eventId, initialTierId]);
 
   useEffect(() => {
     if (step !== "review") return undefined;

@@ -1,35 +1,47 @@
-import { useEffect, useState } from "react";
-import { Image, Linking, Pressable, StyleSheet, Text, View } from "react-native";
-import Svg, { Path, Rect, Text as SvgText } from "react-native-svg";
+import { useCallback, useEffect, useState } from "react";
+import { Image, StyleSheet, Text, View } from "react-native";
 import { Button, LinkButton, Notice } from "../components.js";
 import { useAuth } from "../auth.js";
 import { useI18n } from "../i18n.js";
-import { arcPath, categoryKey } from "../models.js";
-import { mapLinks, shareEventIcs } from "../files.js";
+import { categoryKey } from "../models.js";
+import { shareEventIcs } from "../files.js";
+import HybridVenueMap from "../HybridVenueMap.js";
 import { Body, H1, Muted, Screen, Section } from "../ui.js";
 import { colors } from "../theme.js";
 
-const SEAT_COLORS = ["#2563eb", "#059669", "#d97706", "#db2777", "#7c3aed", "#0891b2"];
-
-// biletflow_web EventDetailsPage + EventPurchase (buy / login / ask organizer).
+// biletflow_web EventDetailsPage (banners, tiers, HybridVenueMap, calendar) + EventPurchase (buy / login / ask organizer).
 export default function EventDetailsScreen({ route, navigation }) {
   const { eventId } = route.params;
   const { client, user } = useAuth();
   const { t, formatDate, formatKZT } = useI18n();
   const [event, setEvent] = useState(null);
   const [state, setState] = useState("loading");
+  const [attempt, setAttempt] = useState(0);
   const [fileError, setFileError] = useState("");
   const [now] = useState(() => Date.now());
+  const retry = useCallback(() => { setState("loading"); setAttempt((n) => n + 1); }, []);
 
+  // web useEvent: 404/403 = not found, anything else = load error with retry
   useEffect(() => {
     let active = true;
     client.getEvent(eventId)
       .then((e) => { if (active) { setEvent(e); setState("ok"); navigation.setOptions({ title: e.title }); } })
-      .catch(() => { if (active) setState("missing"); });
+      .catch((e) => { if (active) setState(e?.status === 404 || e?.status === 403 ? "missing" : "error"); });
     return () => { active = false; };
-  }, [client, eventId, navigation, user]);
+  }, [client, eventId, navigation, user, attempt]);
 
   if (state === "loading") return <Screen><Muted>{t("details.loading")}</Muted></Screen>;
+  if (state === "error" && !event) {
+    return (
+      <Screen>
+        <Notice tone="error" role="alert">{t("details.loadError")}</Notice>
+        <View style={st.actions}>
+          <Button label={t("common.retry")} onPress={retry} />
+          <LinkButton label={t("details.back")} onPress={() => navigation.goBack()} />
+        </View>
+      </Screen>
+    );
+  }
   if (!event) {
     return (
       <Screen>
@@ -42,7 +54,8 @@ export default function EventDetailsScreen({ route, navigation }) {
   const full = (iso) => formatDate(iso, event.timezone, "full");
   const isPreview = event.status === "draft" || event.visibility !== "public";
   const canBuy = event.status === "published" && event.ticketTiers.length > 0;
-  const links = mapLinks(event.venueName, event.venueAddress);
+  const regNotOpen = event.registrationOpensAt !== null && Date.parse(event.registrationOpensAt) > now;
+  const regClosed = event.registrationClosesAt !== null && Date.parse(event.registrationClosesAt) < now;
 
   async function addToCalendar() {
     setFileError("");
@@ -55,6 +68,11 @@ export default function EventDetailsScreen({ route, navigation }) {
         <Notice tone="error" role="alert">{t("details.cancelledBanner")}</Notice>
       ) : isPreview ? (
         <Notice tone="warning">{t("details.previewBanner", { status: t(`eventStatus.${event.status}`), visibility: t(`visibility.${event.visibility}`) })}</Notice>
+      ) : null}
+      {event.status === "published" && (regNotOpen || regClosed) ? (
+        <Notice tone="warning">
+          {regNotOpen ? t("details.registrationNotOpen", { date: full(event.registrationOpensAt) }) : t("details.registrationClosed")}
+        </Notice>
       ) : null}
       {event.imageUrl ? <Image source={{ uri: event.imageUrl }} style={st.image} resizeMode="cover" accessibilityIgnoresInvertColors /> : null}
 
@@ -90,6 +108,9 @@ export default function EventDetailsScreen({ route, navigation }) {
               {tier.saleStartsAt && Date.parse(tier.saleStartsAt) > now ? (
                 <Text style={st.tierLeft}>{t("ticketTypes.from", { date: full(tier.saleStartsAt) })}</Text>
               ) : null}
+              {tier.saleEndsAt && Date.parse(tier.saleEndsAt) < now ? (
+                <Text style={st.tierLeft}>{t("details.salesEnded")}</Text>
+              ) : null}
             </View>
           </View>
         ))}
@@ -108,61 +129,11 @@ export default function EventDetailsScreen({ route, navigation }) {
         )
       ) : null}
 
-      <SeatingLayout tiers={event.ticketTiers} />
-
-      {links ? (
-        <Section title={t("map.title")}>
-          <Muted>{[event.venueName, event.venueAddress].filter(Boolean).join(", ")}</Muted>
-          <View style={st.mapLinks}>
-            <LinkButton label={t("map.openGoogle")} onPress={() => Linking.openURL(links.google)} />
-            <LinkButton label={t("map.openYandex")} onPress={() => Linking.openURL(links.yandex)} />
-          </View>
-        </Section>
-      ) : null}
+      <HybridVenueMap event={event} />
 
       {fileError ? <Notice tone="error">{fileError}</Notice> : null}
       <Button label={t("details.addToCalendar")} onPress={addToCalendar} />
     </Screen>
-  );
-}
-
-// biletflow_web SeatingLayout: most expensive tier closest to the stage; tap a band to see its price.
-function SeatingLayout({ tiers }) {
-  const { t, formatKZT } = useI18n();
-  const [active, setActive] = useState(null);
-  const ordered = [...tiers].sort((a, b) => b.priceKZT - a.priceKZT);
-  if (!ordered.length) return null;
-  const cx = 200, cy = 40, inner = 60, band = Math.min(48, 200 / ordered.length);
-  const height = cy + inner + band * ordered.length + 20;
-  const selected = ordered.find((x) => x.id === active);
-
-  return (
-    <Section title={t("seating.title")}>
-      <Svg viewBox={`0 0 400 ${height}`} width="100%" style={{ aspectRatio: 400 / height }} accessibilityLabel={t("seating.title")}>
-        <Rect x={cx - 70} y={cy - 28} width={140} height={28} rx={6} fill="#111827" />
-        <SvgText x={cx} y={cy - 9} textAnchor="middle" fill="#fff" fontSize="12" fontWeight="700" letterSpacing="2">{t("seating.stage")}</SvgText>
-        {ordered.map((tier, i) => {
-          const on = active === tier.id;
-          return (
-            <Path key={tier.id} d={arcPath(cx, cy, inner + i * band + 3, inner + (i + 1) * band, -70, 70)}
-              fill={tier.remaining === 0 ? "#d1d5db" : SEAT_COLORS[i % SEAT_COLORS.length]}
-              fillOpacity={active && !on ? 0.35 : 0.9} stroke={on ? "#111827" : "#fff"} strokeWidth={on ? 2.5 : 1.5}
-              onPress={() => setActive(on ? null : tier.id)} />
-          );
-        })}
-      </Svg>
-      <Text accessibilityLiveRegion="polite" style={st.seatHint}>
-        {selected ? t("seating.selected", { tier: selected.name, price: formatKZT(selected.priceKZT) }) : t("seating.hint")}
-      </Text>
-      <View style={st.legend} accessibilityLabel={t("seating.legend")}>
-        {ordered.map((tier, i) => (
-          <Pressable key={tier.id} onPress={() => setActive(active === tier.id ? null : tier.id)} style={st.legendItem}>
-            <View style={[st.swatch, { backgroundColor: tier.remaining === 0 ? "#d1d5db" : SEAT_COLORS[i % SEAT_COLORS.length] }]} />
-            <Text style={st.legendText}>{tier.name} · {formatKZT(tier.priceKZT)}{tier.remaining === 0 ? ` (${t("details.soldOut")})` : ""}</Text>
-          </Pressable>
-        ))}
-      </View>
-    </Section>
   );
 }
 
@@ -179,11 +150,5 @@ const st = StyleSheet.create({
   tierRight: { alignItems: "flex-end", maxWidth: "50%" },
   tierPrice: { fontSize: 15, fontWeight: "700", color: colors.gray900 },
   tierWarn: { fontSize: 12, color: colors.amber800, marginTop: 2 },
-  actions: { gap: 12, alignItems: "stretch" },
-  mapLinks: { flexDirection: "row", flexWrap: "wrap", gap: 16, marginTop: 10 },
-  seatHint: { marginTop: 8, fontSize: 14, fontWeight: "500", color: colors.gray800 },
-  legend: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 10 },
-  legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
-  swatch: { width: 12, height: 12, borderRadius: 2 },
-  legendText: { fontSize: 13, color: colors.gray700 }
+  actions: { gap: 12, alignItems: "stretch" }
 });

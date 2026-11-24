@@ -431,6 +431,7 @@ const extra = {
     },
     files: { shareFailed: "Could not open the file: {{reason}}", calendarHint: "Choose Calendar in the share sheet to add the event." },
     picker: { choose: "Choose…", clear: "Clear", done: "Done", formatHint: "YYYY-MM-DD HH:MM" },
+    saleDates: { invalid: "Enter a valid date and time for {{field}} (YYYY-MM-DD HH:MM)." },
     misc: { refresh: "Refresh", openWeb: "Open on the website", loginRequired: "Log in to continue." }
   },
   ru: {
@@ -442,6 +443,7 @@ const extra = {
     },
     files: { shareFailed: "Не удалось открыть файл: {{reason}}", calendarHint: "Выберите «Календарь» в меню, чтобы добавить событие." },
     picker: { choose: "Выбрать…", clear: "Очистить", done: "Готово", formatHint: "ГГГГ-ММ-ДД ЧЧ:ММ" },
+    saleDates: { invalid: "Укажите корректные дату и время в поле «{{field}}» (ГГГГ-ММ-ДД ЧЧ:ММ)." },
     misc: { refresh: "Обновить", openWeb: "Открыть на сайте", loginRequired: "Войдите, чтобы продолжить." }
   },
   kk: {
@@ -453,6 +455,7 @@ const extra = {
     },
     files: { shareFailed: "Файлды ашу мүмкін болмады: {{reason}}", calendarHint: "Іс-шараны қосу үшін мәзірден «Күнтізбе» таңдаңыз." },
     picker: { choose: "Таңдау…", clear: "Тазалау", done: "Дайын", formatHint: "ЖЖЖЖ-АА-КК СС:ММ" },
+    saleDates: { invalid: "«{{field}}» өрісіне жарамды күн мен уақытты енгізіңіз (ЖЖЖЖ-АА-КК СС:ММ)." },
     misc: { refresh: "Жаңарту", openWeb: "Сайтта ашу", loginRequired: "Жалғастыру үшін кіріңіз." }
   }
 };

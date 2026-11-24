@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Card, Notice } from "../components.js";
+import EventCarousel from "../EventCarousel.js";
 import { useAuth } from "../auth.js";
 import { useI18n } from "../i18n.js";
 import { categoryKey } from "../models.js";
 import { colors } from "../theme.js";
 
-// biletflow_web EventsPage: title, search, category chips, result count, cards with "from" price.
+// biletflow_web EventsPage: featured carousel, title, search, category chips, result count, cards with "from" price.
 export default function DiscoverScreen({ navigation }) {
   const { client } = useAuth();
   const { t, formatDate, formatKZT } = useI18n();
@@ -44,6 +45,9 @@ export default function DiscoverScreen({ navigation }) {
 
   const header = (
     <View>
+      {!loading && !error && events.length > 0 ? (
+        <EventCarousel events={events} onOpen={(e) => navigation.navigate("EventDetails", { eventId: e.id })} />
+      ) : null}
       <Text accessibilityRole="header" style={st.h2}>{t("discovery.title")}</Text>
       <TextInput value={q} onChangeText={setQ} placeholder={t("discovery.searchPlaceholder")} accessibilityLabel={t("discovery.searchLabel")}
         placeholderTextColor={colors.gray400} autoCorrect={false} returnKeyType="search" clearButtonMode="while-editing" style={st.search} />

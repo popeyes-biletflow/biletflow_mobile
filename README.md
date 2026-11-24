@@ -8,8 +8,8 @@ emerald/red/amber notices, rounded white cards), and the **web's own KK / RU / E
 
 | Web page / feature | Mobile screen |
 | --- | --- |
-| Events (search, categories, cards with "from" price) | Events tab |
-| Event details (dates, venue, tiers, seating layout, maps, `.ics`, ask organizer) | Event screen (calendar file opens the share sheet) |
+| Events (featured carousel: fade, autoplay, arrows, dots, play/pause, swipe; search, categories, cards with "from" price) | Events tab |
+| Event details (dates, registration banners, tiers, hybrid venue map: seating plan with zoom and seat booking, location, tiers & pricing; `.ics`, ask organizer) | Event screen (calendar file opens the share sheet; the location tab opens Google / Yandex Maps instead of an embedded map) |
 | Checkout modal (hold timer, promo code, attendee details, demo approve/decline, free registration) | Checkout screen |
 | My orders (filters, PDF, help, cancellation request) · Order page · Ticket view with QR | Orders tab · Order · E-ticket (QR on screen, A4 PDF via share sheet) |
 | Login, sign-up with email confirmation, forgot password, profile (payout for organizers) | Account tab · Sign in · Sign up · Reset · Profile |
