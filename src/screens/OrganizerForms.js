@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { Badge, Button, ConfirmDialog, Field, LinkButton, Notice } from "../components.js";
 import { useAuth } from "../auth.js";
 import { useI18n } from "../i18n.js";
-import { ACTIVATION_FEE_KZT, CHECKLIST_KEYS, fromLocalInput, toLocalInput } from "../models.js";
+import { ACTIVATION_FEE_KZT, CHECKLIST_KEYS, fromLocalInput, isLocalInput, toLocalInput } from "../models.js";
 import { Checkbox, DateTimeField, Muted, OptionCard, TextArea } from "../ui.js";
 import { colors } from "../theme.js";
 
@@ -103,8 +103,15 @@ const emptyForm = { name: "", description: "", free: true, price: "", quantity: 
 const toForm = (tt) => ({
   name: tt.name ?? "", description: tt.description ?? "", free: !(tt.price && tt.price > 0),
   price: tt.price && tt.price > 0 ? String(tt.price) : "", quantity: tt.quantity === null ? "" : String(tt.quantity),
-  saleStarts: toLocalInput(tt.sale_starts_at), saleEnds: toLocalInput(tt.sale_ends_at), maxPerOrder: tt.max_per_order ? String(tt.max_per_order) : ""
+  saleStarts: toLocalInput(tt.sale_starts_at).replace("T", " "), saleEnds: toLocalInput(tt.sale_ends_at).replace("T", " "),
+  maxPerOrder: tt.max_per_order ? String(tt.max_per_order) : ""
 });
+
+function isValidSaleDate(value) {
+  if (!isLocalInput(value)) return false;
+  const iso = fromLocalInput(value);
+  return Number.isFinite(Date.parse(iso)) && toLocalInput(iso) === value;
+}
 
 export function TicketTypeManager({ eventId, types, readOnly, paidSalesActive, onChange }) {
   const { client } = useAuth();
@@ -115,14 +122,21 @@ export function TicketTypeManager({ eventId, types, readOnly, paidSalesActive, o
   const [notice, setNotice] = useState(null);
   const set = (k) => (v) => setForm((x) => ({ ...x, [k]: v }));
 
-  function validate() {
+  function validate(saleStarts, saleEnds) {
     const errors = [];
     if (!form.name.trim()) errors.push(t("ticketTypes.errors.name"));
     if (!form.free && !(Number(form.price) > 0)) errors.push(t("ticketTypes.errors.price"));
     if (form.quantity && Number(form.quantity) < 0) errors.push(t("ticketTypes.errors.quantity"));
     if (editing && editing !== "new" && form.quantity && Number(form.quantity) < editing.sold) errors.push(t("ticketTypes.errors.belowSold", { sold: editing.sold }));
     if (form.maxPerOrder && Number(form.maxPerOrder) < 1) errors.push(t("ticketTypes.errors.maxPerOrder"));
-    if (form.saleStarts && form.saleEnds && form.saleEnds <= form.saleStarts) errors.push(t("ticketTypes.errors.saleWindow"));
+    const datesRequired = editing === "new";
+    const invalidStart = (datesRequired || saleStarts) && !isValidSaleDate(saleStarts);
+    const invalidEnd = (datesRequired || saleEnds) && !isValidSaleDate(saleEnds);
+    if (invalidStart) errors.push(t("saleDates.invalid", { field: t("ticketTypes.saleStarts") }));
+    if (invalidEnd) errors.push(t("saleDates.invalid", { field: t("ticketTypes.saleEnds") }));
+    if (!invalidStart && !invalidEnd && saleStarts && saleEnds && saleEnds <= saleStarts) {
+      errors.push(t("ticketTypes.errors.saleWindow"));
+    }
     return errors;
   }
 
@@ -132,12 +146,14 @@ export function TicketTypeManager({ eventId, types, readOnly, paidSalesActive, o
   }
 
   async function submit() {
-    const errors = validate();
+    const saleStarts = form.saleStarts.trim().replace(" ", "T");
+    const saleEnds = form.saleEnds.trim().replace(" ", "T");
+    const errors = validate(saleStarts, saleEnds);
     if (errors.length) { setNotice({ tone: "error", text: t("editor.fixErrors"), items: errors }); return; }
     const body = {
       name: form.name.trim(), description: form.description.trim() || null,
       price: form.free ? 0 : Math.round(Number(form.price)), quantity: form.quantity ? Number(form.quantity) : null,
-      sale_starts_at: fromLocalInput(form.saleStarts), sale_ends_at: fromLocalInput(form.saleEnds),
+      sale_starts_at: fromLocalInput(saleStarts), sale_ends_at: fromLocalInput(saleEnds),
       max_per_order: form.maxPerOrder ? Number(form.maxPerOrder) : null
     };
     setBusy(true);
@@ -229,8 +245,13 @@ export function TicketTypeManager({ eventId, types, readOnly, paidSalesActive, o
           ) : null}
           <Field label={t("ticketTypes.quantity")} value={form.quantity} onChangeText={set("quantity")} keyboardType="number-pad" placeholder="∞" />
           <Field label={t("ticketTypes.maxPerOrder")} value={form.maxPerOrder} onChangeText={set("maxPerOrder")} keyboardType="number-pad" />
-          <DateTimeField label={t("ticketTypes.saleStarts")} value={form.saleStarts} onChange={set("saleStarts")} />
-          <DateTimeField label={t("ticketTypes.saleEnds")} value={form.saleEnds} onChange={set("saleEnds")} />
+          <Field label={t("ticketTypes.saleStarts") + (editing === "new" ? " *" : "")}
+            value={form.saleStarts} onChangeText={set("saleStarts")} placeholder={t("picker.formatHint")}
+            autoCorrect={false} autoCapitalize="none" editable={!busy} />
+          <Field label={t("ticketTypes.saleEnds") + (editing === "new" ? " *" : "")}
+            value={form.saleEnds} onChangeText={set("saleEnds")} placeholder={t("picker.formatHint")}
+            autoCorrect={false} autoCapitalize="none" editable={!busy} />
+          <Muted small>{t("editor.timezoneHint")}</Muted>
           {!form.free && !paidSalesActive ? <Text style={st.amber}>{t("ticketTypes.paidHint")}</Text> : null}
           <View style={st.row}>
             <Button small label={busy ? t("common.saving") : editing === "new" ? t("ticketTypes.create") : t("common.save")} loading={busy} onPress={submit} />

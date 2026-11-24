@@ -165,12 +165,72 @@ export function icsFileName(title) {
   return `${String(title).replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").toLowerCase() || "event"}.ics`;
 }
 
-/** Seating arcs (web SeatingLayout): annular sector path, 0° = straight down from the stage. */
-export function arcPath(cx, cy, r0, r1, start, end) {
-  const p = (r, a) => {
-    const rad = ((a + 90) * Math.PI) / 180;
-    return `${(cx + r * Math.cos(rad)).toFixed(1)} ${(cy + r * Math.sin(rad)).toFixed(1)}`;
-  };
-  const large = end - start > 180 ? 1 : 0;
-  return `M ${p(r1, start)} A ${r1} ${r1} 0 ${large} 1 ${p(r1, end)} L ${p(r0, end)} A ${r0} ${r0} 0 ${large} 0 ${p(r0, start)} Z`;
+// ---- Seating plan (biletflow_web HybridVenueMap) ----
+
+/** Tier colours, most expensive tier first: blue, violet, emerald, amber, pink. */
+export const SEAT_TIER_COLORS = [
+  { fill: "#3b82f6", border: "#2563eb" },
+  { fill: "#8b5cf6", border: "#7c3aed" },
+  { fill: "#059669", border: "#047857" },
+  { fill: "#d97706", border: "#b45309" },
+  { fill: "#db2777", border: "#be185d" }
+];
+
+/** SVG geometry of the plan (viewBox 0 0 560 370), identical to the web. */
+export const SEAT_PLAN = {
+  width: 560, height: 370, rows: 8, seatSize: 19, seatGap: 6, aisleGap: 20, startY: 85, leftMargin: 44, rowPitch: 30
+};
+
+/** Tiers sorted by price, highest first (closest to the stage). */
+export const orderTiersByPrice = (tiers) => [...tiers].sort((a, b) => b.priceKZT - a.priceKZT);
+
+/** Tier id -> colour pair, in price order. */
+export function tierColorMap(orderedTiers) {
+  const map = new Map();
+  orderedTiers.forEach((tier, i) => map.set(tier.id, SEAT_TIER_COLORS[i % SEAT_TIER_COLORS.length]));
+  return map;
 }
+
+function tierForRow(ordered, row, totalRows) {
+  if (ordered.length === 1) return ordered[0];
+  if (ordered.length === 2) return row <= 3 ? ordered[0] : ordered[1];
+  if (ordered.length === 3) return row <= 2 ? ordered[0] : row <= 5 ? ordered[1] : ordered[2];
+  return ordered[Math.min(Math.floor(((row - 1) / totalRows) * ordered.length), ordered.length - 1)];
+}
+
+/**
+ * Seats of the illustrative hall, same as the web: 8 rows, blocks of 4 | 10 | 4 seats, tiers by row
+ * (most expensive in front). The plan is visual only: occupancy is a fixed pattern, and a sold-out
+ * tier has every seat occupied. Booking passes only the tier to checkout, like the web.
+ */
+export function buildSeatPlan(tiers) {
+  const ordered = orderTiersByPrice(tiers);
+  if (!ordered.length) return { seats: [], rowCount: 0 };
+  const { rows, seatSize, seatGap, aisleGap, startY, leftMargin } = SEAT_PLAN;
+  const step = seatSize + seatGap;
+  const centerStartX = leftMargin + 4 * step + aisleGap - seatGap;
+  const rightStartX = centerStartX + 10 * step + aisleGap - seatGap;
+  const blocks = [
+    { block: "left", from: 1, to: 4, x0: leftMargin, taken: (r, s) => (r * 7 + s * 3) % 5 === 0 },
+    { block: "center", from: 5, to: 14, x0: centerStartX, taken: (r, s) => (r * 11 + s * 2) % 6 === 0 },
+    { block: "right", from: 15, to: 18, x0: rightStartX, taken: (r, s) => (r * 5 + s * 7) % 5 === 0 }
+  ];
+  const seats = [];
+  for (let r = 1; r <= rows; r++) {
+    const y = startY + (r - 1) * (step + 5);
+    const tier = tierForRow(ordered, r, rows);
+    const soldOut = tier.remaining !== null && tier.remaining === 0;
+    for (const b of blocks) {
+      for (let s = b.from; s <= b.to; s++) {
+        seats.push({
+          id: `seat-${r}-${s}`, rowNumber: r, seatNumber: s, tierId: tier.id, tierName: tier.name, priceKZT: tier.priceKZT,
+          x: b.x0 + (s - b.from) * step, y, isOccupied: soldOut || b.taken(r, s), block: b.block
+        });
+      }
+    }
+  }
+  return { seats, rowCount: rows };
+}
+
+/** Row-range label key for the tiers table (by price position), as on the web. */
+export const tierRowsKey = (index) => (index === 0 ? "rowsVip" : index === 1 ? "rowsMid" : "rowsBack");
