@@ -1,17 +1,13 @@
 import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import { createBrowserSession } from "./browserSession.js";
 
-// FS-21: access + refresh tokens live only in the OS keychain / keystore (Expo SecureStore).
+// FS-21: on a phone, access + refresh tokens live only in the OS keychain / keystore (Expo SecureStore).
 const KEY = "biletflow_staff_session";
 const LEGACY_KEY = "biletflow_admin_access_token";
 
-// SecureStore is unavailable in the browser preview (react-native-web): keep the session in memory there.
-const native = Platform.OS === "ios" || Platform.OS === "android";
-let memory = null;
-
-export const sessionStore = {
+const nativeSession = {
   async load() {
-    if (!native) return memory;
     const raw = await SecureStore.getItemAsync(KEY);
     if (!raw) return null;
     try {
@@ -22,12 +18,14 @@ export const sessionStore = {
     }
   },
   async save(session) {
-    if (!native) { memory = session; return; }
     await SecureStore.setItemAsync(KEY, JSON.stringify(session));
   },
   async clear() {
-    if (!native) { memory = null; return; }
     await SecureStore.deleteItemAsync(KEY);
     await SecureStore.deleteItemAsync(LEGACY_KEY).catch(() => {});
   }
 };
+
+// SecureStore is unavailable in the browser (react-native-web): use localStorage there, like biletflow_web.
+const native = Platform.OS === "ios" || Platform.OS === "android";
+export const sessionStore = native ? nativeSession : createBrowserSession(KEY);

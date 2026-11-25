@@ -71,7 +71,7 @@ src/locales/*.js          copy of the biletflow_web dictionaries (tools/sync-web
 src/qr.js                 QR classification + server-error mapping                         (pure JS, tested)
 src/stats.js              scan latency summary vs 2 s target                               (pure JS, tested)
 src/strings.js            KK/RU/EN copy and web date format                                (pure JS, tested)
-src/sessionStore.js       SecureStore (memory only in the web preview)
+src/sessionStore.js       SecureStore on phones, localStorage in the browser (src/browserSession.js, tested)
 src/localCache.js         per-user event cache (AsyncStorage), cleared on sign-out
 src/components.js         Navbar, LanguageSwitcher, Button, Field, Notice, Card, Badge, PillTabs, ConfirmDialog
 src/screens/*             Discover, EventDetails, Checkout, Orders, Order, Ticket, Support*, Account*, Organizer*, Checkin*
@@ -81,7 +81,8 @@ deploy/                   Docker Compose demo, fixtures, backup/restore
 
 ## Storage and security
 
-- Tokens: Expo SecureStore only. Language choice: AsyncStorage (kept after sign-out, like the web).
+- Tokens: Expo SecureStore on phones; `localStorage` in the browser version, like the web app, so a reload keeps the
+  session. The access token is refreshed when the server rejects it; if that fails, the user is signed out. Language choice: AsyncStorage (kept after sign-out, like the web).
 - Event list cache: AsyncStorage, keyed to the user, removed on sign-out or when another account signs in.
 - Attendee rosters, QR payloads and scan logs are kept in memory only.
 - Offline: cached events can be browsed, but **no offline admission** — every scan needs the server

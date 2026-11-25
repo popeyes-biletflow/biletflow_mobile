@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createClient, isStaffRole } from "../src/api.js";
+import { createBrowserSession } from "../src/browserSession.js";
 
 const BASE = "https://api.example.com";
 const SIG = "b".repeat(64);
@@ -123,6 +124,47 @@ test("FS-21: failed refresh clears the stored session and signals expiry", async
   await assert.rejects(client.getAssignedEvents(), { code: "SESSION_EXPIRED" });
   assert.equal(store.saved(), null);
   assert.equal(expired(), 1);
+});
+
+test("FS-21: the browser session survives a page reload and is removed on sign-out", async () => {
+  const data = new Map();
+  const storage = () => ({ getItem: (k) => data.get(k) ?? null, setItem: (k, v) => data.set(k, v), removeItem: (k) => data.delete(k) });
+  const routes = { "POST /api/auth/login": () => LOGIN_OK, "GET /api/users/me": () => profile("organizer"), "POST /api/auth/logout": () => ({ body: {} }) };
+  // every page load builds a new store and client; only localStorage is kept
+  const page = () => createClient({ baseUrl: BASE, store: createBrowserSession("s", storage), fetchImpl: fakeServer(routes).fetchImpl });
+  await page().signIn("s@x.kz", "pw");
+  const reloaded = page();
+  assert.equal((await reloaded.restore()).role, "organizer");
+  await reloaded.signOut();
+  assert.equal(data.size, 0);
+  assert.equal(await page().restore(), null);
+});
+
+test("FS-21: blocked or damaged browser storage never throws", async () => {
+  const blocked = createBrowserSession("s", () => { throw new Error("SecurityError"); });
+  await blocked.save({ accessToken: "a1" });
+  assert.equal((await blocked.load()).accessToken, "a1");
+  await blocked.clear();
+  assert.equal(await blocked.load(), null);
+  for (const raw of ["{broken", "null", "{}"]) {
+    assert.equal(await createBrowserSession("s", () => ({ getItem: () => raw })).load(), null);
+  }
+});
+
+test("FS-21: a refresh token rotated by another tab is used; another user's is not", async () => {
+  for (const [userId, expected] of [["staff-1", "r2"], ["other", "r1"]]) {
+    const store = memoryStore({ accessToken: "a1", refreshToken: "r1", userId: "staff-1", email: "s@x.kz" });
+    const sent = [];
+    const { client } = signedInClient({
+      "GET /api/mobile/events": (req) => req.headers.Authorization === "Bearer a3" ? { body: { events: [] } } : { status: 401, body: {} },
+      "POST /api/auth/refresh": (req) => { sent.push(req.body.refresh_token); return { body: { access_token: "a3", refresh_token: "r3" } }; },
+      "GET /api/events": () => ({ body: [] })
+    }, store);
+    await client.restore();
+    await store.save({ accessToken: "a2", refreshToken: "r2", userId });
+    await client.getAssignedEvents();
+    assert.deepEqual(sent, [expected]);
+  }
 });
 
 test("FS-21: assigned events come from /api/mobile/events; catalog only adds images", async () => {

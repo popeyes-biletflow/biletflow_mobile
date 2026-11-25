@@ -129,13 +129,16 @@ export function createClient({ baseUrl, store, onSessionExpired, fetchImpl, time
     if (!session?.refreshToken) throw new ApiError("Session expired.", { code: "SESSION_EXPIRED", status: 401 });
     if (!refreshing) {
       refreshing = (async () => {
-        const result = await raw("/api/auth/refresh", { method: "POST", body: { refresh_token: session.refreshToken } });
+        // Refresh tokens rotate: another browser tab may already have stored a newer one (web AuthContext does the same).
+        const stored = await store.load().catch(() => null);
+        const latest = stored?.refreshToken && stored.userId === session.userId ? stored.refreshToken : session.refreshToken;
+        const result = await raw("/api/auth/refresh", { method: "POST", body: { refresh_token: latest } });
         if (!result.ok || typeof result.body?.access_token !== "string") {
           throw new ApiError("Session expired.", { code: "SESSION_EXPIRED", status: 401 });
         }
         session = {
           accessToken: result.body.access_token,
-          refreshToken: result.body.refresh_token || session.refreshToken,
+          refreshToken: result.body.refresh_token || latest,
           userId: result.body.user_id || session.userId,
           email: result.body.email || session.email
         };

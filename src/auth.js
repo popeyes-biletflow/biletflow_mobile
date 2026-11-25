@@ -7,7 +7,7 @@ import { sessionStore } from "./sessionStore.js";
 const AuthContext = createContext(null);
 
 // Session for the whole app (web AuthContext equivalent): any role can sign in; the token lives in
-// SecureStore, a 401 refreshes once, a failed refresh signs out with "session expired".
+// SecureStore (localStorage in a browser), a 401 refreshes once, a failed refresh signs out with "session expired".
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [ready, setReady] = useState(false);
