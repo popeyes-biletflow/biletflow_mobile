@@ -9,9 +9,12 @@ import { isLocalInput } from "./models.js";
 import { colors, shadow } from "./theme.js";
 
 let DateTimePicker = null;
+let DateTimePickerAndroid = null;
 if (Platform.OS !== "web") {
   // eslint-disable-next-line global-require
-  DateTimePicker = require("@react-native-community/datetimepicker").default;
+  const picker = require("@react-native-community/datetimepicker");
+  DateTimePicker = picker.default;
+  DateTimePickerAndroid = picker.DateTimePickerAndroid;
 }
 
 /** <main className="mx-auto max-w-* p-6"> with pull-to-refresh. */
@@ -193,11 +196,24 @@ function fromDate(date, mode) {
   return mode === "date" ? day : `${day}T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`;
 }
 
-/** datetime-local / date input. Native: system picker; browser preview: text field. */
+/** Event date and time selection uses the platform picker in Almaty time. */
 export function DateTimeField({ label, value, onChange, mode = "datetime", hint, disabled }) {
   const { t } = useI18n();
-  const [step, setStep] = useState(null); // "date" | "time" | "both"
+  const [draftDate, setDraftDate] = useState(null);
   const display = value ? value.replace("T", " ") : "";
+
+  if (Platform.OS === "web" && mode === "datetime") {
+    return (
+      <View>
+        {label ? <Text style={u.label}>{label}</Text> : null}
+        <input type="datetime-local" aria-label={label} value={value ?? ""} disabled={disabled}
+          onChange={(event) => onChange(event.currentTarget.value)}
+          style={{ border: `1px solid ${colors.gray300}`, borderRadius: 6, padding: 10,
+            fontSize: 15, color: colors.gray900, backgroundColor: colors.white }} />
+        {hint ? <Text style={u.hint}>{hint}</Text> : null}
+      </View>
+    );
+  }
 
   if (!DateTimePicker) {
     return (
@@ -215,44 +231,60 @@ export function DateTimeField({ label, value, onChange, mode = "datetime", hint,
     );
   }
 
-  const iosInline = Platform.OS === "ios";
+  function openPicker() {
+    if (Platform.OS === "ios") {
+      setDraftDate(toDate(value, mode));
+      return;
+    }
+
+    DateTimePickerAndroid.open({
+      value: toDate(value, mode),
+      mode: "date",
+      timeZoneName: "Asia/Almaty",
+      onValueChange: (_, date) => {
+        const day = fromDate(date, "date");
+        if (mode === "date") {
+          onChange(day);
+          return;
+        }
+
+        const time = value?.split("T")[1] || "10:00";
+        DateTimePickerAndroid.open({
+          value: toDate(`${day}T${time}`, mode),
+          mode: "time",
+          is24Hour: true,
+          timeZoneName: "Asia/Almaty",
+          onValueChange: (_, selectedTime) => {
+            const [, hoursAndMinutes] = fromDate(selectedTime, "datetime").split("T");
+            onChange(`${day}T${hoursAndMinutes}`);
+          }
+        });
+      }
+    });
+  }
+
   return (
     <View>
       {label ? <Text style={u.label}>{label}</Text> : null}
       <View style={u.dtRow}>
         <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled}
-          onPress={() => setStep(iosInline ? "both" : "date")} style={[u.input, u.selectBox, u.flex, disabled && u.dim]}>
+          onPress={openPicker} style={[u.input, u.selectBox, u.flex, disabled && u.dim]}>
           <Text style={[u.selectText, !value && { color: colors.gray400 }]}>{display || t("picker.choose")}</Text>
         </Pressable>
         {value && !disabled ? <Button small variant="outline" label={t("picker.clear")} onPress={() => onChange("")} /> : null}
       </View>
       {hint ? <Text style={u.hint}>{hint}</Text> : null}
-      {step && !iosInline ? (
-        <DateTimePicker value={toDate(value, mode)} mode={step} is24Hour
-          onChange={(event, date) => {
-            if (event.type === "dismissed" || !date) { setStep(null); return; }
-            if (step === "date") {
-              const day = fromDate(date, "date");
-              if (mode === "date") { onChange(day); setStep(null); return; }
-              const time = value?.split("T")[1] || "10:00";
-              onChange(`${day}T${time}`);
-              setStep("time");
-            } else {
-              const day = value?.split("T")[0] || fromDate(new Date(), "date");
-              const tm = fromDate(date, "datetime").split("T")[1];
-              onChange(`${day}T${tm}`);
-              setStep(null);
-            }
-          }} />
-      ) : null}
-      {step && iosInline ? (
-        <Modal transparent animationType="fade" visible onRequestClose={() => setStep(null)}>
+      {draftDate ? (
+        <Modal transparent animationType="fade" visible onRequestClose={() => setDraftDate(null)}>
           <View style={u.backdrop}>
             <View style={u.sheet}>
-              <DateTimePicker value={toDate(value, mode)} mode={mode === "date" ? "date" : "datetime"} display="inline"
+              <DateTimePicker value={draftDate} mode={mode === "date" ? "date" : "datetime"} display="inline"
                 timeZoneName="Asia/Almaty" locale="ru-RU"
-                onChange={(_, date) => { if (date) onChange(fromDate(date, mode)); }} />
-              <Button label={t("picker.done")} onPress={() => setStep(null)} />
+                onValueChange={(_, date) => setDraftDate(date)} />
+              <Button label={t("picker.done")} onPress={() => {
+                onChange(fromDate(draftDate, mode));
+                setDraftDate(null);
+              }} />
             </View>
           </View>
         </Modal>
